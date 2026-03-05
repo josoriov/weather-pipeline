@@ -24,9 +24,9 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  project_slug = lower(replace(var.project_name, "/[^A-Za-z0-9-]/", "-"))
+  project_slug = lower(regexreplace(var.project_name, "[^A-Za-z0-9-]", "-"))
   # Glue databases require underscores, so adjust the project name accordingly.
-  glue_db_name = lower(replace(var.project_name, "/[^A-Za-z0-9_]/", "_"))
+  glue_db_name = lower(regexreplace(var.project_name, "[^A-Za-z0-9_]", "_"))
   # Resolve the Lambda package to an absolute path so Terraform tracks code changes.
   lambda_package_path = startswith(var.lambda_package, "/") ? var.lambda_package : abspath("${path.module}/${var.lambda_package}")
 }
@@ -177,11 +177,6 @@ data "aws_iam_policy_document" "lambda_policy" {
     ]
   }
 
-  statement {
-    sid     = "AllowStartGlueCrawler"
-    actions = ["glue:StartCrawler"]
-    resources = [aws_glue_crawler.data_lake.arn]
-  }
 }
 
 resource "aws_iam_policy" "lambda" {
@@ -213,10 +208,12 @@ resource "aws_lambda_function" "etl_orchestrator" {
 
   environment {
     variables = merge(var.lambda_environment, {
+      S3_BUCKET        = aws_s3_bucket.data_lake.bucket
       RAW_BUCKET       = aws_s3_bucket.data_lake.bucket
-      RAW_PREFIX       = "raw/"
+      RAW_PREFIX       = "raw"
       PROCESSED_BUCKET = aws_s3_bucket.data_lake.bucket
-      PROCESSED_PREFIX = "processed/"
+      PROCESSED_PREFIX = "processed"
+      USE_PARQUET      = "false"
     })
   }
 
@@ -318,9 +315,10 @@ resource "aws_glue_crawler" "data_lake" {
   name         = "${local.project_slug}-weather-crawler"
   database_name = aws_glue_catalog_database.data_lake.name
   role          = aws_iam_role.glue.arn
+  schedule      = var.crawler_schedule_expression
 
   s3_target {
-    path = "s3://${aws_s3_bucket.data_lake.bucket}/"
+    path = "s3://${aws_s3_bucket.data_lake.bucket}/processed/"
   }
 
   recrawl_policy {
@@ -341,7 +339,8 @@ resource "aws_glue_crawler" "data_lake" {
 
   depends_on = [
     aws_iam_role_policy_attachment.glue_service_role,
-    aws_iam_role_policy.glue_s3_access
+    aws_iam_role_policy.glue_s3_access,
+    aws_s3_object.data_lake_prefixes
   ]
 
   tags = merge(var.common_tags, {

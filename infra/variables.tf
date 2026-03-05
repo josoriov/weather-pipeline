@@ -27,7 +27,15 @@ variable "lambda_schedule_expression" {
   # executes. Adjust to trade off freshness vs API usage.
   description = "EventBridge schedule expression that triggers the ETL Lambda."
   type        = string
-  default     = "rate(30 minutes)"
+  default     = "rate(15 minutes)"
+}
+
+variable "crawler_schedule_expression" {
+  # Glue crawler schedule used to refresh partitions/schema in the catalog.
+  # This default runs every Sunday at 03:00 UTC.
+  description = "Cron schedule for the weekly Glue crawler run."
+  type        = string
+  default     = "cron(0 3 ? * SUN *)"
 }
 
 variable "lambda_environment" {
