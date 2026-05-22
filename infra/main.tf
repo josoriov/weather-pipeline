@@ -24,9 +24,9 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  project_slug = lower(regexreplace(var.project_name, "[^A-Za-z0-9-]", "-"))
+  project_slug = lower(join("", [for ch in regexall(".", var.project_name) : length(regexall("[A-Za-z0-9-]", ch)) > 0 ? ch : "-"]))
   # Glue databases require underscores, so adjust the project name accordingly.
-  glue_db_name = lower(regexreplace(var.project_name, "[^A-Za-z0-9_]", "_"))
+  glue_db_name = lower(join("", [for ch in regexall(".", var.project_name) : length(regexall("[A-Za-z0-9_]", ch)) > 0 ? ch : "_"]))
   # Resolve the Lambda package to an absolute path so Terraform tracks code changes.
   lambda_package_path = startswith(var.lambda_package, "/") ? var.lambda_package : abspath("${path.module}/${var.lambda_package}")
 }
@@ -127,6 +127,21 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  rule {
+    id     = "expire-old-results"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 30
+    }
+  }
+}
+
 # ---------------------------------------------------------------------------
 # IAM ROLES AND POLICIES: Lambda service role with S3 + Glue permissions.
 # ---------------------------------------------------------------------------
@@ -153,8 +168,8 @@ resource "aws_iam_role" "lambda" {
 
 data "aws_iam_policy_document" "lambda_policy" {
   statement {
-    sid       = "AllowLogging"
-    actions   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+    sid     = "AllowLogging"
+    actions = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
     resources = [
       "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
     ]
@@ -203,18 +218,24 @@ resource "aws_lambda_function" "etl_orchestrator" {
   timeout       = 900
   memory_size   = 512
   publish       = true
+  layers        = var.lambda_layer_arns
 
   source_code_hash = filebase64sha256(local.lambda_package_path)
 
   environment {
-    variables = merge(var.lambda_environment, {
-      S3_BUCKET        = aws_s3_bucket.data_lake.bucket
-      RAW_BUCKET       = aws_s3_bucket.data_lake.bucket
-      RAW_PREFIX       = "raw"
-      PROCESSED_BUCKET = aws_s3_bucket.data_lake.bucket
-      PROCESSED_PREFIX = "processed"
-      USE_PARQUET      = "false"
-    })
+    variables = merge(
+      {
+        USE_PARQUET = "false"
+      },
+      var.lambda_environment,
+      {
+        S3_BUCKET        = aws_s3_bucket.data_lake.bucket
+        RAW_BUCKET       = aws_s3_bucket.data_lake.bucket
+        RAW_PREFIX       = "raw"
+        PROCESSED_BUCKET = aws_s3_bucket.data_lake.bucket
+        PROCESSED_PREFIX = "processed"
+      }
+    )
   }
 
   depends_on = [
@@ -312,7 +333,7 @@ resource "aws_glue_catalog_database" "data_lake" {
 }
 
 resource "aws_glue_crawler" "data_lake" {
-  name         = "${local.project_slug}-weather-crawler"
+  name          = "${local.project_slug}-weather-crawler"
   database_name = aws_glue_catalog_database.data_lake.name
   role          = aws_iam_role.glue.arn
   schedule      = var.crawler_schedule_expression

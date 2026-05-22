@@ -23,6 +23,10 @@ htmlcov/
 venv/
 ENV/
 
+# AWS CLI offline installer bundle
+awscliv2.zip
+aws/
+
 # Build and packaging artifacts
 build/
 dist/
@@ -41,3 +45,8 @@ override.tf.json
 *_override.tf.json
 *.tfvars
 *.tfplan
+infra/tfplan
+infra/outputs
+
+# Agentic and AI files
+agents/*

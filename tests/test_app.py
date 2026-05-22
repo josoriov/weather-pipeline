@@ -5,6 +5,7 @@ import os
 import pathlib
 import sys
 import unittest
+from typing import Literal
 from unittest import mock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ class DummyResponse:
     def __enter__(self) -> "DummyResponse":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type, exc, tb) -> Literal[False]:
         del exc_type, exc, tb
         return False
 
@@ -41,6 +42,7 @@ class WeatherExtractorTests(unittest.TestCase):
 
         self.assertEqual(obs_utc, dt.datetime(2026, 3, 5, 10, 0, tzinfo=dt.timezone.utc))
         self.assertIsNotNone(obs_local)
+        assert obs_local is not None
         self.assertEqual(obs_local.isoformat(), "2026-03-05T11:00:00+01:00")
 
     def test_fetch_open_meteo_parses_json_response(self) -> None:
@@ -116,11 +118,46 @@ class WeatherExtractorTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["records"], 1)
+        self.assertEqual(result["errors"], [])
         self.assertEqual(result["results"], [{"city": "Berlin", "raw": "raw-key", "processed": "processed-key"}])
 
         fetch_mock.assert_called_once_with(52.52, 13.405)
         raw_mock.assert_called_once()
         processed_mock.assert_called_once()
+
+    def test_lambda_handler_survives_city_failure(self) -> None:
+        fake_now = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
+        config = app.RuntimeConfig(
+            raw_bucket="weather-bucket",
+            raw_prefix="raw",
+            processed_bucket="weather-bucket",
+            processed_prefix="processed",
+            use_parquet=False,
+        )
+        cities = {
+            "Berlin": (52.52, 13.405, "Europe/Berlin"),
+            "Madrid": (40.4168, -3.7038, "Europe/Madrid"),
+        }
+
+        def fake_fetch(lat: float, lon: float) -> dict[str, object]:
+            if lat == 40.4168:
+                raise OSError("timeout")
+            return {"current": {"temperature_2m": 14.0}}
+
+        with mock.patch.object(app, "CITY_COORDS", cities):
+            with mock.patch.object(app, "load_runtime_config", return_value=config):
+                with mock.patch.object(app, "utc_now", return_value=fake_now):
+                    with mock.patch.object(app, "fetch_open_meteo", side_effect=fake_fetch):
+                        with mock.patch.object(app, "write_raw", return_value="raw-key"):
+                            with mock.patch.object(app, "write_processed", return_value="processed-key"):
+                                result = app.lambda_handler({}, None)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["records"], 1)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["city"], "Madrid")
+        self.assertIn("timeout", result["errors"][0]["error"])
+        self.assertEqual(result["results"][0]["city"], "Berlin")
 
 
 if __name__ == "__main__":

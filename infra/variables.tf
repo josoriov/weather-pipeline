@@ -27,7 +27,7 @@ variable "lambda_schedule_expression" {
   # executes. Adjust to trade off freshness vs API usage.
   description = "EventBridge schedule expression that triggers the ETL Lambda."
   type        = string
-  default     = "rate(15 minutes)"
+    default     = "cron(0/15 * * * ? *)"
 }
 
 variable "crawler_schedule_expression" {
@@ -44,6 +44,13 @@ variable "lambda_environment" {
   description = "Additional environment variables for the ETL Lambda."
   type        = map(string)
   default     = {}
+}
+
+variable "lambda_layer_arns" {
+  # Optional Lambda layers, such as a PyArrow layer when Parquet output is enabled.
+  description = "Lambda layer ARNs attached to the ETL Lambda function."
+  type        = list(string)
+  default     = []
 }
 
 variable "common_tags" {

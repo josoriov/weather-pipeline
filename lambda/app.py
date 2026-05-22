@@ -385,7 +385,6 @@ def build_processed_record(
     obs_utc, obs_local = resolve_observation_times(current.get("time"), timezone_name)
 
     return {
-        "city": city,
         "latitude": lat,
         "longitude": lon,
         "ingest_ts_utc": time_of_query.isoformat(),
@@ -447,35 +446,40 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Use one capture timestamp for every city in this invocation so records align.
     now_utc = utc_now()
     results: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
 
     for city, (lat, lon, timezone_name) in CITY_COORDS.items():
-        # Fetch, store raw, then store processed so troubleshooting can always
-        # reference the exact original payload for the same partition.
-        payload = fetch_open_meteo(lat, lon)
-        raw_key = write_raw(
-            city=city,
-            time_of_query=now_utc,
-            payload=payload,
-            bucket=config.raw_bucket,
-            prefix=config.raw_prefix,
-        )
+        try:
+            # Fetch, store raw, then store processed so troubleshooting can always
+            # reference the exact original payload for the same partition.
+            payload = fetch_open_meteo(lat, lon)
+            raw_key = write_raw(
+                city=city,
+                time_of_query=now_utc,
+                payload=payload,
+                bucket=config.raw_bucket,
+                prefix=config.raw_prefix,
+            )
 
-        record = build_processed_record(
-            city=city,
-            lat=lat,
-            lon=lon,
-            timezone_name=timezone_name,
-            time_of_query=now_utc,
-            payload=payload,
-        )
-        processed_key = write_processed(
-            city=city,
-            time_of_query=now_utc,
-            record=record,
-            bucket=config.processed_bucket,
-            prefix=config.processed_prefix,
-            use_parquet=config.use_parquet,
-        )
-        results.append({"city": city, "raw": raw_key, "processed": processed_key})
+            record = build_processed_record(
+                city=city,
+                lat=lat,
+                lon=lon,
+                timezone_name=timezone_name,
+                time_of_query=now_utc,
+                payload=payload,
+            )
+            processed_key = write_processed(
+                city=city,
+                time_of_query=now_utc,
+                record=record,
+                bucket=config.processed_bucket,
+                prefix=config.processed_prefix,
+                use_parquet=config.use_parquet,
+            )
+            results.append({"city": city, "raw": raw_key, "processed": processed_key})
+        except Exception as exc:
+            print(f"[ERROR] {city}: {exc}")
+            errors.append({"city": city, "error": str(exc)})
 
-    return {"ok": True, "records": len(results), "results": results}
+    return {"ok": len(errors) == 0, "records": len(results), "errors": errors, "results": results}
