@@ -8,10 +8,11 @@ deploying, and verifying the Weather Pipeline from a fresh checkout.
 The setup provisions a serverless AWS weather data pipeline:
 
 - AWS Lambda fetches current observations from Open-Meteo.
-- S3 stores gzipped raw JSON and processed CSV output by default.
+- S3 stores one gzipped raw batch and one processed batch per invocation.
 - EventBridge runs the Lambda on a schedule.
-- Glue crawls processed data for Athena.
+- A static Glue table uses hourly Athena partition projection; no crawler runs.
 - Athena provides the query workgroup and result location.
+- S3 lifecycle, CloudWatch retention, scan limits and an optional budget cap costs.
 
 Parquet output is optional and requires an additional PyArrow Lambda layer.
 
@@ -63,9 +64,7 @@ Terraform deploys the Lambda artifact from `dist/function.zip`. Rebuild it befor
 each deployment, especially after changing anything under `lambda/`.
 
 ```bash
-cd lambda
-./package_lambda.sh
-cd ..
+bash lambda/package_lambda.sh
 ```
 
 The `dist/` directory is generated locally and ignored by Git.
@@ -78,17 +77,25 @@ Create `infra/terraform.tfvars` for the target environment:
 project_name                = "weather-pipeline"
 aws_region                  = "us-east-1"
 lambda_schedule_expression  = "rate(15 minutes)"
-crawler_schedule_expression = "cron(0 3 ? * SUN *)"
+lambda_environment          = {}
+lambda_layer_arns           = []
+use_parquet_output          = false
 
-lambda_environment = {
-  USE_PARQUET = "false"
-}
+# Leave current-object expiration disabled until retention is approved.
+raw_retention_days       = null
+processed_retention_days = null
 
-lambda_layer_arns = []
+partition_projection_start            = "2026-01-01-00"
+cloudwatch_log_retention_days          = 30
+athena_bytes_scanned_cutoff_per_query  = 104857600
+monthly_budget_usd                     = 1
+budget_alert_email                     = null
+cost_anomaly_threshold_usd             = 0.5
 
 common_tags = {
   Environment = "dev"
   Owner       = "your-name"
+  CostCenter  = "weather-data"
 }
 ```
 
@@ -104,7 +111,43 @@ terraform -chdir=infra validate
 After the first successful init, commit `infra/.terraform.lock.hcl` so provider
 versions are reproducible across machines and CI.
 
-## 5. Plan and Deploy
+## 5. Migrate an Existing Deployment
+
+Skip this section for a new account. Existing deployments normally already have
+the Lambda log group, but it was not previously managed by Terraform. Import it
+before planning so Terraform does not try to recreate it:
+
+```bash
+aws logs describe-log-groups \
+  --log-group-name-prefix "/aws/lambda/weather-pipeline-etl-orchestrator"
+
+terraform -chdir=infra import \
+  aws_cloudwatch_log_group.lambda \
+  "/aws/lambda/weather-pipeline-etl-orchestrator"
+```
+
+The migration intentionally destroys the scheduled Glue crawler and its IAM role,
+then creates a static table named by `glue_table_name`. Existing objects and the
+old crawler-created table are not deleted. New data uses:
+
+```text
+raw/ingest_hour=yyyy-MM-dd-HH/snapshot_<epoch>.json.gz
+processed/ingest_hour=yyyy-MM-dd-HH/part-<epoch>.csv
+```
+
+Review these replacements carefully in the plan. Current raw and processed
+objects do not expire while their retention variables remain `null`.
+
+To enable the optional project budget and daily anomaly monitor, first activate
+the `Project` cost tag, wait for AWS Billing to expose it, then set
+`budget_alert_email`:
+
+```bash
+aws ce update-cost-allocation-tags-status \
+  --cost-allocation-tags-status TagKey=Project,Status=Active
+```
+
+## 6. Plan and Deploy
 
 Review the plan before applying it:
 
@@ -119,7 +162,7 @@ Save the important outputs:
 terraform -chdir=infra output
 ```
 
-## 6. Verify the Deployment
+## 7. Verify the Deployment
 
 Invoke the Lambda manually:
 
@@ -144,29 +187,13 @@ Check recent Lambda logs in CloudWatch:
 aws logs tail "/aws/lambda/$(terraform -chdir=infra output -raw lambda_function_name)" --since 30m
 ```
 
-## 7. Build the Glue Catalog and Query Athena
-
-Run the Glue crawler once after processed data exists:
-
-```bash
-aws glue start-crawler \
-  --name "$(terraform -chdir=infra output -raw glue_crawler_name)"
-```
-
-Wait for the crawler to finish:
-
-```bash
-aws glue get-crawler \
-  --name "$(terraform -chdir=infra output -raw glue_crawler_name)" \
-  --query "Crawler.State"
-```
-
-Then open Athena, select the workgroup from Terraform output, and run a sample
-query against the discovered table:
+The invocation response must report 14 records and exactly one `raw` and one
+`processed` key. Then query the projected table; no crawler is required:
 
 ```sql
 SELECT *
-FROM "<glue_database_name>"."<processed_table_name>"
+FROM "<glue_database_name>"."<glue_table_name>"
+WHERE ingest_hour >= date_format(current_timestamp - interval '1' day, '%Y-%m-%d-%H')
 LIMIT 10;
 ```
 
@@ -174,6 +201,7 @@ Use these outputs to find the database and workgroup names:
 
 ```bash
 terraform -chdir=infra output -raw glue_database_name
+terraform -chdir=infra output -raw glue_table_name
 terraform -chdir=infra output -raw athena_workgroup
 ```
 
@@ -193,18 +221,13 @@ Copy the layer version ARN returned by AWS and update `infra/terraform.tfvars`:
 
 ```hcl
 lambda_layer_arns = ["arn:aws:lambda:<region>:<account-id>:layer:pyarrow-311:<version>"]
-
-lambda_environment = {
-  USE_PARQUET = "true"
-}
+use_parquet_output = true
 ```
 
 Rebuild the Lambda package if needed, then apply Terraform again:
 
 ```bash
-cd lambda
-./package_lambda.sh
-cd ..
+bash lambda/package_lambda.sh
 terraform -chdir=infra plan -out=tfplan
 terraform -chdir=infra apply tfplan
 ```
@@ -218,12 +241,29 @@ Useful commands after deployment:
 ```bash
 terraform -chdir=infra output -raw lambda_function_name
 terraform -chdir=infra output -raw data_lake_bucket
-terraform -chdir=infra output -raw glue_crawler_name
+terraform -chdir=infra output -raw glue_table_name
 terraform -chdir=infra output -raw athena_workgroup
 ```
 
-The EventBridge schedule is controlled by `lambda_schedule_expression`. The Glue
-crawler schedule is controlled by `crawler_schedule_expression`.
+The only scheduled workload is the Lambda, controlled by
+`lambda_schedule_expression`. Athena discovers hourly partitions through table
+projection and does not require a scheduled catalog job.
+
+## Cost Baseline
+
+Capture a before/after breakdown by usage type and operation. The optional bucket
+and legacy crawler arguments add current object and crawler metrics:
+
+```bash
+./scripts/cost_baseline.sh \
+  2026-07-01 2026-08-01 \
+  "$(terraform -chdir=infra output -raw data_lake_bucket)" \
+  weather-pipeline-weather-crawler
+```
+
+Run it again after a complete billing month and compare S3 request usage and Glue
+cost. Listing a bucket is itself a billable S3 operation, so use this diagnostic
+only for periodic baselines.
 
 ## Teardown
 

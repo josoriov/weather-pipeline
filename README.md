@@ -9,11 +9,11 @@ AWS Glue and Athena for analytics.
 
 ```
 Open-Meteo API  ──▶  AWS Lambda (Python 3.11)  ──▶  S3 Data Lake
-                           │                          ├── raw/    (gzipped JSON)
-                       EventBridge                    └── processed/ (CSV or Parquet)
+                           │                          ├── raw/ (1 gzip batch/run)
+                       EventBridge                    └── processed/ (1 batch/run)
                       (every 15 min)                          │
-                                                        Glue Crawler
-                                                       (weekly catalog)
+                                                  Projected Glue table
+                                                   (no scheduled crawler)
                                                               │
                                                          Athena ─▶ queries
 ```
@@ -41,14 +41,14 @@ pressure, cloud cover, dew point, visibility, is_day.
 
 | Component | Status |
 |-----------|--------|
-| Lambda ETL function | **Complete** — fetches, stores raw JSON, writes processed CSV/Parquet |
-| Terraform infrastructure | **Defined** — S3, Lambda, IAM, EventBridge, Glue, Athena |
+| Lambda ETL function | **Complete** — batches 14 cities into two S3 objects per invocation |
+| Terraform infrastructure | **Defined** — S3 lifecycle, Lambda, EventBridge, projected Glue table, Athena, logs and optional budget |
 | Local checks | **Passing** — unit tests, mypy, and Terraform formatting |
-| Terraform validation | **Pending init** — providers must be installed with `terraform init` before `terraform validate` |
+| Terraform validation | **Passing** — validated with Terraform 1.15.4 and AWS provider 5.100.0 |
 | Lambda deployment package | **Generated locally** — `dist/function.zip` is ignored by Git and should be rebuilt before deploy |
 | PyArrow Lambda layer | **Optional, not built** — scripts target Python 3.11 and Terraform accepts layer ARNs |
 | CI/CD pipeline | **Not implemented** |
-| Deployment to AWS | **Not confirmed** — no Terraform state is present in this checkout |
+| Cost controls | **Defined** — 30-day logs, Athena scan cutoff, version cleanup and optional retention/budget |
 
 See [setup.md](setup.md) for the end-to-end build and deployment guide, and
 [TODO.md](TODO.md) for the current repo state and remaining work.
@@ -67,8 +67,7 @@ See [setup.md](setup.md) for the end-to-end build and deployment guide, and
 Rebuild the deployment artifact whenever `lambda/app.py` changes:
 
 ```bash
-cd lambda
-./package_lambda.sh    # outputs ../dist/function.zip
+bash lambda/package_lambda.sh # outputs dist/function.zip
 ```
 
 ### 2. Deploy with Terraform
@@ -86,11 +85,11 @@ Override defaults by creating `infra/terraform.tfvars`:
 project_name               = "weather-pipeline-dev"
 aws_region                 = "us-west-2"
 lambda_schedule_expression = "rate(15 minutes)"
-crawler_schedule_expression = "cron(0 3 ? * SUN *)"
-lambda_environment = {
-  USE_PARQUET = "false"
-}
-lambda_layer_arns = []
+lambda_environment         = {}
+lambda_layer_arns          = []
+use_parquet_output         = false
+raw_retention_days         = null # Set to 90 only after approving deletion.
+budget_alert_email         = null # Set after activating the Project cost tag.
 common_tags = {
   Environment = "dev"
   Owner       = "data-eng"
@@ -105,9 +104,7 @@ aws lambda invoke \
   --function-name $(terraform -chdir=infra output -raw lambda_function_name) \
   /dev/stdout
 
-# Trigger the Glue crawler for an initial catalog refresh
-aws glue start-crawler \
-  --name $(terraform -chdir=infra output -raw glue_crawler_name)
+terraform -chdir=infra output -raw glue_table_name
 ```
 
 Then query the data in Athena using the workgroup created by Terraform.
@@ -127,9 +124,7 @@ After publishing, set the layer ARN and enable Parquet in `infra/terraform.tfvar
 
 ```hcl
 lambda_layer_arns = ["arn:aws:lambda:<region>:<account-id>:layer:pyarrow-311:<version>"]
-lambda_environment = {
-  USE_PARQUET = "true"
-}
+use_parquet_output = true
 ```
 
 ## Run Tests
@@ -168,7 +163,10 @@ terraform destroy
 
 - **`AccessDenied` during deploy** — verify the IAM identity used by Terraform has
   permissions for Lambda, IAM, S3, Glue, Athena, and EventBridge.
-- **Glue crawler errors** — check the `aws_iam_role.glue` policy and bucket ARN.
+- **No rows in Athena** — filter `ingest_hour` within the projected range and verify
+  objects exist under `processed/ingest_hour=yyyy-MM-dd-HH/`.
+- **Log group already exists** — import it before the first apply; see
+  [setup.md](setup.md#5-migrate-an-existing-deployment).
 - **Lambda timeout** — the function has a 15-minute timeout and 512 MB memory;
   increase via Terraform variables if needed.
 
