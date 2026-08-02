@@ -1,5 +1,7 @@
+import csv
 import datetime as dt
 import gzip
+import io
 import json
 import os
 import pathlib
@@ -35,7 +37,7 @@ class WeatherExtractorTests(unittest.TestCase):
     def test_to_partition_path(self) -> None:
         stamp = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
         partition = app.to_partition_path(stamp)
-        self.assertEqual(partition, "year=2026/month=03/day=05/hour=10/minute=15")
+        self.assertEqual(partition, "ingest_hour=2026-03-05-10")
 
     def test_resolve_observation_times_handles_utc_zulu(self) -> None:
         obs_utc, obs_local = app.resolve_observation_times("2026-03-05T10:00:00Z", "Europe/Berlin")
@@ -63,32 +65,56 @@ class WeatherExtractorTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 app.load_runtime_config()
 
-    def test_write_raw_uploads_gzipped_json(self) -> None:
+    def test_write_raw_uploads_one_gzipped_batch(self) -> None:
         stamp = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
-        payload = {"a": 1}
+        observations = [
+            {"city": "New York", "payload": {"a": 1}},
+            {"city": "Berlin", "payload": {"a": 2}},
+        ]
 
-        with mock.patch.object(app.S3, "put_object") as put_object_mock:
+        with mock.patch.object(app, "S3", mock.Mock()) as s3_mock:
             key = app.write_raw(
-                city="New York",
                 time_of_query=stamp,
-                payload=payload,
+                observations=observations,
                 bucket="weather-bucket",
                 prefix="raw",
             )
 
         self.assertEqual(
             key,
-            "raw/city=new_york/year=2026/month=03/day=05/hour=10/minute=15/snapshot_1772705700.json.gz",
+            "raw/ingest_hour=2026-03-05-10/snapshot_1772705700.json.gz",
         )
 
-        kwargs = put_object_mock.call_args.kwargs
+        kwargs = s3_mock.put_object.call_args.kwargs
         self.assertEqual(kwargs["Bucket"], "weather-bucket")
         self.assertEqual(kwargs["Key"], key)
         self.assertEqual(kwargs["ContentType"], "application/json")
         self.assertEqual(kwargs["ContentEncoding"], "gzip")
 
         decoded_payload = json.loads(gzip.decompress(kwargs["Body"]).decode("utf-8"))
-        self.assertEqual(decoded_payload, payload)
+        self.assertEqual(decoded_payload["ingest_ts_utc"], stamp.isoformat())
+        self.assertEqual(decoded_payload["observations"], observations)
+
+    def test_write_processed_uploads_one_csv_batch(self) -> None:
+        stamp = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
+        records = [
+            {"city": "Berlin", "temperature_2m": 14.0},
+            {"city": "Madrid", "temperature_2m": 18.0},
+        ]
+
+        with mock.patch.object(app, "S3", mock.Mock()) as s3_mock:
+            key = app.write_processed(
+                time_of_query=stamp,
+                records=records,
+                bucket="weather-bucket",
+                prefix="processed",
+                use_parquet=False,
+            )
+
+        self.assertEqual(key, "processed/ingest_hour=2026-03-05-10/part-1772705700.csv")
+        kwargs = s3_mock.put_object.call_args.kwargs
+        rows = list(csv.DictReader(io.StringIO(kwargs["Body"].decode("utf-8"))))
+        self.assertEqual([row["city"] for row in rows], ["Berlin", "Madrid"])
 
     def test_lambda_handler_fetches_and_writes_data(self) -> None:
         fake_now = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
@@ -108,7 +134,11 @@ class WeatherExtractorTests(unittest.TestCase):
         }
 
         # Patch I/O boundaries so this test validates orchestration only.
-        with mock.patch.object(app, "CITY_COORDS", {"Berlin": (52.52, 13.405, "Europe/Berlin")}):
+        cities = {
+            "Berlin": (52.52, 13.405, "Europe/Berlin"),
+            "Madrid": (40.4168, -3.7038, "Europe/Madrid"),
+        }
+        with mock.patch.object(app, "CITY_COORDS", cities):
             with mock.patch.object(app, "load_runtime_config", return_value=config):
                 with mock.patch.object(app, "utc_now", return_value=fake_now):
                     with mock.patch.object(app, "fetch_open_meteo", return_value=payload) as fetch_mock:
@@ -117,13 +147,21 @@ class WeatherExtractorTests(unittest.TestCase):
                                 result = app.lambda_handler({}, None)
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["records"], 1)
+        self.assertEqual(result["records"], 2)
+        self.assertEqual(result["cities"], ["Berlin", "Madrid"])
         self.assertEqual(result["errors"], [])
-        self.assertEqual(result["results"], [{"city": "Berlin", "raw": "raw-key", "processed": "processed-key"}])
+        self.assertEqual(result["raw"], "raw-key")
+        self.assertEqual(result["processed"], "processed-key")
 
-        fetch_mock.assert_called_once_with(52.52, 13.405)
+        self.assertEqual(fetch_mock.call_count, 2)
+        fetch_mock.assert_has_calls([mock.call(52.52, 13.405), mock.call(40.4168, -3.7038)])
         raw_mock.assert_called_once()
         processed_mock.assert_called_once()
+        self.assertEqual(raw_mock.call_args.kwargs["observations"][0]["city"], "Berlin")
+        self.assertEqual(
+            [record["city"] for record in processed_mock.call_args.kwargs["records"]],
+            ["Berlin", "Madrid"],
+        )
 
     def test_lambda_handler_survives_city_failure(self) -> None:
         fake_now = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
@@ -157,7 +195,9 @@ class WeatherExtractorTests(unittest.TestCase):
         self.assertEqual(len(result["errors"]), 1)
         self.assertEqual(result["errors"][0]["city"], "Madrid")
         self.assertIn("timeout", result["errors"][0]["error"])
-        self.assertEqual(result["results"][0]["city"], "Berlin")
+        self.assertEqual(result["cities"], ["Berlin"])
+        self.assertEqual(result["raw"], "raw-key")
+        self.assertEqual(result["processed"], "processed-key")
 
 
 if __name__ == "__main__":

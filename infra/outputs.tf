@@ -31,14 +31,23 @@ output "glue_database_name" {
   value       = aws_glue_catalog_database.data_lake.name
 }
 
-output "glue_crawler_name" {
-  # Use this name to manually trigger or monitor crawler runs.
-  description = "Name of the Glue Crawler scanning the data lake."
-  value       = aws_glue_crawler.data_lake.name
+output "glue_table_name" {
+  description = "Projected Glue table used by Athena without a crawler."
+  value       = aws_glue_catalog_table.processed.name
 }
 
 output "athena_workgroup" {
   # Workgroup pre-configured with result location for analytics queries.
   description = "Athena workgroup configured for weather analytics."
   value       = aws_athena_workgroup.weather.name
+}
+
+output "monthly_budget_name" {
+  description = "Project budget name, or null when no alert email was configured."
+  value       = try(aws_budgets_budget.monthly[0].name, null)
+}
+
+output "cost_anomaly_monitor_arn" {
+  description = "Cost anomaly monitor ARN, or null when no alert email was configured."
+  value       = try(aws_ce_anomaly_monitor.project[0].arn, null)
 }
