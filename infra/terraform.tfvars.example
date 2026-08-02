@@ -1,0 +1,29 @@
+project_name               = "weather-pipeline"
+aws_region                 = "us-east-1"
+lambda_schedule_expression = "cron(0/15 * * * ? *)"
+
+lambda_environment = {}
+lambda_layer_arns  = []
+use_parquet_output = false
+
+# Safe defaults retain current raw and processed objects indefinitely. After
+# validating the migration, set raw_retention_days to 90 to cap raw history.
+raw_retention_days       = null
+processed_retention_days = null
+
+noncurrent_version_retention_days      = 30
+abort_incomplete_multipart_upload_days = 7
+cloudwatch_log_retention_days           = 30
+athena_bytes_scanned_cutoff_per_query   = 104857600
+partition_projection_start              = "2026-01-01-00"
+
+# Activate the Project user-defined cost allocation tag before setting an email.
+monthly_budget_usd           = 1
+budget_alert_email           = null
+cost_anomaly_threshold_usd = 0.5
+
+common_tags = {
+  Environment = "dev"
+  Owner       = "your-name"
+  CostCenter  = "weather-data"
+}

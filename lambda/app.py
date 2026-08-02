@@ -64,7 +64,15 @@ class MissingS3Client:
         raise RuntimeError("boto3 is required to upload objects to S3")
 
 
-S3 = boto3.client("s3") if boto3 is not None else MissingS3Client()
+S3: Any = None
+
+
+def get_s3_client() -> Any:
+    """Create the S3 client on first use instead of during module import."""
+    global S3
+    if S3 is None:
+        S3 = boto3.client("s3") if boto3 is not None else MissingS3Client()
+    return S3
 
 
 @dataclass(frozen=True)
@@ -164,19 +172,18 @@ def fetch_open_meteo(lat: float, lon: float) -> dict[str, Any]:
 
 
 def to_partition_path(time_of_query: dt.datetime) -> str:
-    """Format a timestamp into a Hive-style partition path.
+    """Format a timestamp into the hourly partition used by the data lake.
 
     Args:
         time_of_query: Capture timestamp used for partitioning.
 
     Returns:
-        Partition string shaped as
-        ``year=YYYY/month=MM/day=DD/hour=HH/minute=MM``.
+        Partition string shaped as ``ingest_hour=YYYY-MM-DD-HH``.
+
+    Keeping city and minute out of the partition path prevents one partition
+    per record. City remains a queryable column in the processed dataset.
     """
-    return (
-        f"year={time_of_query:%Y}/month={time_of_query:%m}/day={time_of_query:%d}/"
-        f"hour={time_of_query:%H}/minute={time_of_query:%M}"
-    )
+    return f"ingest_hour={time_of_query:%Y-%m-%d-%H}"
 
 
 def to_local_timestamp(time_utc: dt.datetime, timezone: str) -> dt.datetime:
@@ -224,18 +231,6 @@ def resolve_observation_times(
     return obs_utc, obs_local
 
 
-def city_to_slug(city: str) -> str:
-    """Convert a display city name into a stable S3-safe slug.
-
-    Args:
-        city: Original city label.
-
-    Returns:
-        Lowercase city name with spaces replaced by underscores.
-    """
-    return city.replace(" ", "_").lower()
-
-
 def write_s3_bytes(
     bucket: str,
     key: str,
@@ -258,7 +253,7 @@ def write_s3_bytes(
             gzip_file.write(data_bytes)
         data_bytes = buf.getvalue()
         # Keep the key deterministic and add .gz only for compressed payloads.
-        S3.put_object(
+        get_s3_client().put_object(
             Bucket=bucket,
             Key=f"{key}.gz",
             Body=data_bytes,
@@ -267,50 +262,51 @@ def write_s3_bytes(
         )
         return
 
-    S3.put_object(Bucket=bucket, Key=key, Body=data_bytes, ContentType=content_type)
+    get_s3_client().put_object(Bucket=bucket, Key=key, Body=data_bytes, ContentType=content_type)
 
 
 def write_raw(
-    city: str,
     time_of_query: dt.datetime,
-    payload: dict[str, Any],
+    observations: list[dict[str, Any]],
     bucket: str,
     prefix: str,
 ) -> str:
-    """Persist the raw API payload to partitioned S3 storage.
+    """Persist one batched raw snapshot to partitioned S3 storage.
 
     Args:
-        city: City name used to build the partitioned key.
         time_of_query: Capture timestamp used in partitions and file name.
-        payload: Raw API response body.
+        observations: Successful API responses and their city metadata.
         bucket: Destination raw-data bucket.
         prefix: Root prefix for raw objects.
 
     Returns:
         Full S3 key for the uploaded gzipped JSON object.
     """
-    city_slug = city_to_slug(city)
-    # Hive-style key layout lets Glue/Athena discover partitions automatically.
-    path = f"{prefix}/city={city_slug}/{to_partition_path(time_of_query)}/"
+    if not observations:
+        raise ValueError("At least one raw observation is required")
+
+    path = f"{prefix}/{to_partition_path(time_of_query)}/"
     key = f"{path}snapshot_{int(time_of_query.timestamp())}.json"
-    write_s3_bytes(bucket, key, json.dumps(payload).encode("utf-8"), gz=True)
+    document = {
+        "ingest_ts_utc": time_of_query.isoformat(),
+        "observations": observations,
+    }
+    write_s3_bytes(bucket, key, json.dumps(document).encode("utf-8"), gz=True)
     return f"{key}.gz"
 
 
 def write_processed(
-    city: str,
     time_of_query: dt.datetime,
-    record: dict[str, Any],
+    records: list[dict[str, Any]],
     bucket: str,
     prefix: str,
     use_parquet: bool,
 ) -> str:
-    """Store a flattened record in Parquet or CSV and return its S3 key.
+    """Store a batch of flattened records in Parquet or CSV.
 
     Args:
-        city: City name used for partitioning.
         time_of_query: Capture timestamp used for key generation.
-        record: Flattened weather record ready for analytics.
+        records: Flattened weather records ready for analytics.
         bucket: Destination processed-data bucket.
         prefix: Root prefix for processed objects.
         use_parquet: Desired storage format; falls back to CSV if pyarrow is unavailable.
@@ -318,16 +314,17 @@ def write_processed(
     Returns:
         S3 key of the written Parquet or CSV object.
     """
-    city_slug = city_to_slug(city)
-    path = f"{prefix}/city={city_slug}/{to_partition_path(time_of_query)}/"
+    if not records:
+        raise ValueError("At least one processed record is required")
+
+    path = f"{prefix}/{to_partition_path(time_of_query)}/"
 
     if use_parquet and pa is not None and pq is not None:
-        # One record per file keeps ingestion simple and idempotent for a time tick.
-        table = pa.Table.from_pylist([record])
+        table = pa.Table.from_pylist(records)
         key = f"{path}part-{int(time_of_query.timestamp())}.parquet"
         parquet_buffer = io.BytesIO()
         pq.write_table(table, parquet_buffer, compression="snappy")
-        S3.put_object(
+        get_s3_client().put_object(
             Bucket=bucket,
             Key=key,
             Body=parquet_buffer.getvalue(),
@@ -338,9 +335,9 @@ def write_processed(
     # CSV fallback keeps the pipeline operable when pyarrow is unavailable.
     key = f"{path}part-{int(time_of_query.timestamp())}.csv"
     csv_buffer = io.StringIO()
-    writer = csv.DictWriter(csv_buffer, fieldnames=list(record.keys()))
+    writer = csv.DictWriter(csv_buffer, fieldnames=list(records[0].keys()))
     writer.writeheader()
-    writer.writerow(record)
+    writer.writerows(records)
     write_s3_bytes(
         bucket=bucket,
         key=key,
@@ -385,6 +382,7 @@ def build_processed_record(
     obs_utc, obs_local = resolve_observation_times(current.get("time"), timezone_name)
 
     return {
+        "city": city,
         "latitude": lat,
         "longitude": lon,
         "ingest_ts_utc": time_of_query.isoformat(),
@@ -431,34 +429,36 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     1. Loads runtime configuration from environment variables.
     2. Uses one shared ingestion timestamp for all cities.
     3. Fetches Open-Meteo current conditions per city.
-    4. Writes raw JSON and processed CSV/Parquet records to S3.
+    4. Batches all successful cities into one raw and one processed S3 object.
 
     Args:
         event: Lambda invocation payload (unused).
         context: Lambda runtime context (unused).
 
     Returns:
-        Summary with status, record count, and written S3 keys per city.
+        Summary with status, record count, successful cities, and S3 keys.
     """
     del event, context
 
     config = load_runtime_config()
     # Use one capture timestamp for every city in this invocation so records align.
     now_utc = utc_now()
-    results: list[dict[str, str]] = []
+    raw_observations: list[dict[str, Any]] = []
+    processed_records: list[dict[str, Any]] = []
+    successful_cities: list[str] = []
     errors: list[dict[str, str]] = []
 
     for city, (lat, lon, timezone_name) in CITY_COORDS.items():
         try:
-            # Fetch, store raw, then store processed so troubleshooting can always
-            # reference the exact original payload for the same partition.
             payload = fetch_open_meteo(lat, lon)
-            raw_key = write_raw(
-                city=city,
-                time_of_query=now_utc,
-                payload=payload,
-                bucket=config.raw_bucket,
-                prefix=config.raw_prefix,
+            raw_observations.append(
+                {
+                    "city": city,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "timezone": timezone_name,
+                    "payload": payload,
+                }
             )
 
             record = build_processed_record(
@@ -469,17 +469,35 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 time_of_query=now_utc,
                 payload=payload,
             )
-            processed_key = write_processed(
-                city=city,
-                time_of_query=now_utc,
-                record=record,
-                bucket=config.processed_bucket,
-                prefix=config.processed_prefix,
-                use_parquet=config.use_parquet,
-            )
-            results.append({"city": city, "raw": raw_key, "processed": processed_key})
+            processed_records.append(record)
+            successful_cities.append(city)
         except Exception as exc:
             print(f"[ERROR] {city}: {exc}")
             errors.append({"city": city, "error": str(exc)})
 
-    return {"ok": len(errors) == 0, "records": len(results), "errors": errors, "results": results}
+    raw_key: Optional[str] = None
+    processed_key: Optional[str] = None
+    if processed_records:
+        # Storage failures are allowed to fail the invocation so EventBridge can retry.
+        raw_key = write_raw(
+            time_of_query=now_utc,
+            observations=raw_observations,
+            bucket=config.raw_bucket,
+            prefix=config.raw_prefix,
+        )
+        processed_key = write_processed(
+            time_of_query=now_utc,
+            records=processed_records,
+            bucket=config.processed_bucket,
+            prefix=config.processed_prefix,
+            use_parquet=config.use_parquet,
+        )
+
+    return {
+        "ok": len(errors) == 0 and bool(processed_records),
+        "records": len(processed_records),
+        "cities": successful_cities,
+        "errors": errors,
+        "raw": raw_key,
+        "processed": processed_key,
+    }
