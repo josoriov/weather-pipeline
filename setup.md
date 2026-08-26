@@ -9,9 +9,9 @@ The setup provisions a serverless AWS weather data pipeline:
 
 - AWS Lambda fetches current observations from Open-Meteo.
 - S3 stores one gzipped raw batch and one processed batch per invocation.
-- EventBridge runs the Lambda on a schedule.
+- EventBridge can run the Lambda on a schedule when execution is enabled.
 - A static Glue table uses hourly Athena partition projection; no crawler runs.
-- Athena provides the query workgroup and result location.
+- Athena provides the query workgroup and result location when execution is enabled.
 - S3 lifecycle, CloudWatch retention, scan limits and an optional budget cap costs.
 
 Parquet output is optional and requires an additional PyArrow Lambda layer.
@@ -43,7 +43,8 @@ export AWS_REGION="us-east-1"
 ```
 
 The AWS identity must be able to manage Lambda, S3, IAM, Glue, Athena,
-EventBridge, and CloudWatch Logs.
+EventBridge, and CloudWatch Logs. Managing the optional alerts also requires
+Budgets and Cost Explorer permissions.
 
 ## 1. Validate the Local Project
 
@@ -76,6 +77,7 @@ Create `infra/terraform.tfvars` for the target environment:
 ```hcl
 project_name                = "weather-pipeline"
 aws_region                  = "us-east-1"
+execution_enabled           = false
 lambda_schedule_expression  = "rate(15 minutes)"
 lambda_environment          = {}
 lambda_layer_arns           = []
@@ -100,6 +102,8 @@ common_tags = {
 ```
 
 `terraform.tfvars` is ignored by Git so account-specific values stay local.
+Set `execution_enabled = true` only when scheduled ingestion, Lambda invocation,
+and Athena queries should be available.
 
 ## 4. Initialize and Validate Terraform
 
@@ -156,6 +160,10 @@ terraform -chdir=infra plan -out=tfplan
 terraform -chdir=infra apply tfplan
 ```
 
+With `execution_enabled = false`, the plan must keep the EventBridge rule and
+Athena workgroup disabled and Lambda reserved concurrency at zero. Reject a plan
+that enables any of those resources unexpectedly.
+
 Save the important outputs:
 
 ```bash
@@ -164,7 +172,19 @@ terraform -chdir=infra output
 
 ## 7. Verify the Deployment
 
-Invoke the Lambda manually:
+When `execution_enabled = false`, verify the halt controls:
+
+```bash
+aws events describe-rule --name weather-pipeline-etl-schedule --query State
+aws lambda get-function-concurrency \
+  --function-name weather-pipeline-etl-orchestrator
+aws athena get-work-group --work-group weather-pipeline_weather \
+  --query WorkGroup.State
+```
+
+The expected values are `DISABLED`, zero reserved concurrency, and `DISABLED`.
+To validate data ingestion, first set `execution_enabled = true`, apply the
+change, and then invoke the Lambda manually:
 
 ```bash
 aws lambda invoke \
@@ -204,6 +224,9 @@ terraform -chdir=infra output -raw glue_database_name
 terraform -chdir=infra output -raw glue_table_name
 terraform -chdir=infra output -raw athena_workgroup
 ```
+
+If this was only a temporary validation, set `execution_enabled = false` again,
+apply a reviewed plan, and confirm the halt state before leaving the environment.
 
 ## Optional: Enable Parquet Output
 
@@ -245,21 +268,74 @@ terraform -chdir=infra output -raw glue_table_name
 terraform -chdir=infra output -raw athena_workgroup
 ```
 
-The only scheduled workload is the Lambda, controlled by
-`lambda_schedule_expression`. Athena discovers hourly partitions through table
-projection and does not require a scheduled catalog job.
+The only managed scheduled workload is the Lambda. `execution_enabled = false`
+disables its EventBridge rule, throttles the function to zero concurrency, and
+disables the Athena workgroup. When execution is enabled,
+`lambda_schedule_expression` controls the ingestion interval. Athena discovers
+hourly partitions through table projection and does not require a scheduled
+catalog job.
+
+Use the same reviewed Terraform workflow for both state transitions:
+
+```bash
+# Set execution_enabled to false (halt) or true (resume) first.
+terraform -chdir=infra plan -out=tfplan
+terraform -chdir=infra apply tfplan
+```
+
+Verify a halt after applying:
+
+```bash
+aws events describe-rule --name weather-pipeline-etl-schedule --query State
+aws lambda get-function-concurrency \
+  --function-name weather-pipeline-etl-orchestrator
+aws athena get-work-group --work-group weather-pipeline_weather \
+  --query WorkGroup.State
+```
+
+The account also contains an unmanaged legacy Lambda named `weather-pipeline`.
+It has no trigger and is currently throttled to zero. Terraform does not manage
+that safeguard, so verify it separately until the function is removed:
+
+```bash
+aws lambda get-function-concurrency --function-name weather-pipeline
+```
+
+For an emergency halt, block the live execution paths first and reconcile
+Terraform immediately afterward:
+
+```bash
+aws events disable-rule --name weather-pipeline-etl-schedule
+aws lambda put-function-concurrency \
+  --function-name weather-pipeline-etl-orchestrator \
+  --reserved-concurrent-executions 0
+aws lambda put-function-concurrency \
+  --function-name weather-pipeline \
+  --reserved-concurrent-executions 0
+aws athena update-work-group \
+  --work-group weather-pipeline_weather \
+  --state DISABLED
+```
+
+An invocation that is already running can finish; the managed function timeout
+is 15 minutes. Keep both concurrency limits at zero, set
+`execution_enabled = false`, and require a no-change Terraform plan before
+considering the environment reconciled. These commands do not delete stored
+data or disable the budget and anomaly alerts.
 
 ## Cost Baseline
 
 Capture a before/after breakdown by usage type and operation. The optional bucket
-and legacy crawler arguments add current object and crawler metrics:
+argument adds current object metrics:
 
 ```bash
 ./scripts/cost_baseline.sh \
   2026-07-01 2026-08-01 \
-  "$(terraform -chdir=infra output -raw data_lake_bucket)" \
-  weather-pipeline-weather-crawler
+  "$(terraform -chdir=infra output -raw data_lake_bucket)"
 ```
+
+The fourth script argument is only for a historical deployment where the legacy
+crawler still exists. The current deployment has no crawler.
 
 Run it again after a complete billing month and compare S3 request usage and Glue
 cost. Listing a bucket is itself a billable S3 operation, so use this diagnostic
@@ -268,7 +344,8 @@ only for periodic baselines.
 ## Teardown
 
 S3 buckets must be emptied before destroying the stack, including versioned
-objects.
+objects and delete markers. The recursive commands below remove current objects
+but are not sufficient by themselves for versioned history.
 
 ```bash
 aws s3 rm "s3://$(terraform -chdir=infra output -raw data_lake_bucket)" --recursive

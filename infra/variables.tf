@@ -14,6 +14,12 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "execution_enabled" {
+  description = "Whether Lambda execution, its EventBridge schedule, and Athena queries are enabled."
+  type        = bool
+  default     = false
+}
+
 variable "lambda_package" {
   # Relative or absolute path to the zipped Lambda code artifact. The default
   # assumes the `scripts/package_lambda.sh` workflow stored the file in /dist.

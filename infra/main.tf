@@ -279,16 +279,17 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_function" "etl_orchestrator" {
-  function_name = local.lambda_function_name
-  description   = "Fetches weather data and stores it to the data lake."
-  filename      = local.lambda_package_path
-  handler       = "app.lambda_handler"
-  runtime       = "python3.11"
-  role          = aws_iam_role.lambda.arn
-  timeout       = 900
-  memory_size   = 512
-  publish       = true
-  layers        = var.lambda_layer_arns
+  function_name                  = local.lambda_function_name
+  description                    = "Fetches weather data and stores it to the data lake."
+  filename                       = local.lambda_package_path
+  handler                        = "app.lambda_handler"
+  runtime                        = "python3.11"
+  role                           = aws_iam_role.lambda.arn
+  timeout                        = 900
+  memory_size                    = 512
+  reserved_concurrent_executions = var.execution_enabled ? -1 : 0
+  publish                        = true
+  layers                         = var.lambda_layer_arns
 
   source_code_hash = filebase64sha256(local.lambda_package_path)
 
@@ -329,6 +330,7 @@ resource "aws_lambda_function" "etl_orchestrator" {
 resource "aws_cloudwatch_event_rule" "etl_schedule" {
   name                = "${local.project_slug}-etl-schedule"
   schedule_expression = var.lambda_schedule_expression
+  state               = var.execution_enabled ? "ENABLED" : "DISABLED"
 
   tags = merge(local.resource_tags, {
     Component = "etl-schedule"
@@ -526,7 +528,8 @@ resource "aws_glue_catalog_table" "processed" {
 # ---------------------------------------------------------------------------
 
 resource "aws_athena_workgroup" "weather" {
-  name = "${local.project_slug}_weather"
+  name  = "${local.project_slug}_weather"
+  state = var.execution_enabled ? "ENABLED" : "DISABLED"
 
   configuration {
     enforce_workgroup_configuration = true
@@ -587,7 +590,9 @@ resource "aws_ce_anomaly_monitor" "project" {
     Not            = null
     Or             = null
     Tags = {
-      Key          = "Project"
+      # Cost Explorer prefixes activated user-defined cost allocation tags.
+      # Match the live monitor to avoid replacing this cost safeguard.
+      Key          = "user:Project"
       MatchOptions = ["EQUALS"]
       Values       = [var.project_name]
     }

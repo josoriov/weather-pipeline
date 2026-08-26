@@ -11,11 +11,11 @@ AWS Glue and Athena for analytics.
 Open-Meteo API  ──▶  AWS Lambda (Python 3.11)  ──▶  S3 Data Lake
                            │                          ├── raw/ (1 gzip batch/run)
                        EventBridge                    └── processed/ (1 batch/run)
-                      (every 15 min)                          │
+                  (15 min when enabled)                       │
                                                   Projected Glue table
                                                    (no scheduled crawler)
                                                               │
-                                                         Athena ─▶ queries
+                                                 Athena (when enabled) ─▶ queries
 ```
 
 **Cities tracked:** Berlin, Madrid, Regensburg, Paris, London, New York, Toronto,
@@ -31,6 +31,7 @@ pressure, cloud cover, dew point, visibility, is_day.
 |------|-------------|
 | `lambda/` | Python Lambda handler (`app.py`) and packaging script |
 | `infra/` | Terraform stack — S3, Lambda, IAM, EventBridge, Glue, Athena |
+| `docs/` | Operational notes and resolved incident documentation |
 | `tests/` | Unit tests for the Lambda handler |
 | `data/` | Sample city coordinates (`cities.json`) |
 | `layer_build/` | Scripts to build and publish a PyArrow Lambda layer |
@@ -42,13 +43,15 @@ pressure, cloud cover, dew point, visibility, is_day.
 | Component | Status |
 |-----------|--------|
 | Lambda ETL function | **Complete** — batches 14 cities into two S3 objects per invocation |
-| Terraform infrastructure | **Defined** — S3 lifecycle, Lambda, EventBridge, projected Glue table, Athena, logs and optional budget |
+| Live execution | **Halted** — EventBridge and Athena are disabled; managed and legacy Lambdas have zero reserved concurrency |
+| Terraform infrastructure | **Reconciled** — live plan reported no changes on 2026-08-26 |
+| Glue catalog | **Cost optimized** — static projected table; no crawler, crawler schedule, or crawler IAM role |
 | Local checks | **Passing** — unit tests, mypy, and Terraform formatting |
 | Terraform validation | **Passing** — validated with Terraform 1.15.4 and AWS provider 5.100.0 |
 | Lambda deployment package | **Generated locally** — `dist/function.zip` is ignored by Git and should be rebuilt before deploy |
 | PyArrow Lambda layer | **Optional, not built** — scripts target Python 3.11 and Terraform accepts layer ARNs |
 | CI/CD pipeline | **Not implemented** |
-| Cost controls | **Defined** — 30-day logs, Athena scan cutoff, version cleanup and optional retention/budget |
+| Cost controls | **Active** — 30-day logs, Athena scan cutoff, version cleanup, USD 1.50 monthly budget, and anomaly alerts |
 
 See [setup.md](setup.md) for the end-to-end build and deployment guide, and
 [TODO.md](TODO.md) for the current repo state and remaining work.
@@ -56,7 +59,8 @@ See [setup.md](setup.md) for the end-to-end build and deployment guide, and
 ## Prerequisites
 
 - **Terraform** >= 1.5
-- **AWS CLI** v2 configured with credentials for Lambda, S3, IAM, Glue, Athena, and EventBridge
+- **AWS CLI** v2 configured with credentials for Lambda, S3, IAM, Glue, Athena,
+  EventBridge, and—when cost alerts are managed—Budgets and Cost Explorer
 - **Python** 3.11 (matching the Lambda runtime)
 - **uv** *(optional)* — for local dependency management via `pyproject.toml`
 
@@ -84,6 +88,7 @@ Override defaults by creating `infra/terraform.tfvars`:
 ```hcl
 project_name               = "weather-pipeline-dev"
 aws_region                 = "us-west-2"
+execution_enabled          = false # Set true only when the pipeline should run.
 lambda_schedule_expression = "rate(15 minutes)"
 lambda_environment         = {}
 lambda_layer_arns          = []
@@ -96,18 +101,38 @@ common_tags = {
 }
 ```
 
+`execution_enabled = false` is the default safety state: it disables the
+EventBridge rule, sets Lambda reserved concurrency to zero, and disables the
+Athena workgroup without removing data or cost controls.
+
 ### 3. Verify
 
-```bash
-# Invoke Lambda manually
-aws lambda invoke \
-  --function-name $(terraform -chdir=infra output -raw lambda_function_name) \
-  /dev/stdout
+With the default halted configuration, verify the controls instead of invoking
+the function:
 
+```bash
+aws events describe-rule --name weather-pipeline-etl-schedule --query State
+aws lambda get-function-concurrency \
+  --function-name weather-pipeline-etl-orchestrator
+aws athena get-work-group --work-group weather-pipeline_weather \
+  --query WorkGroup.State
 terraform -chdir=infra output -raw glue_table_name
 ```
 
-Then query the data in Athena using the workgroup created by Terraform.
+Set `execution_enabled = true` before invoking Lambda or querying Athena.
+
+## Halt and Resume
+
+`execution_enabled` is the Terraform source of truth for the managed execution
+paths. Keep it `false` to preserve the current halt. Changing it does not delete
+S3 objects, the projected Glue table, logs, IAM roles, budgets, or anomaly alerts.
+
+To resume intentionally, set it to `true`, review `terraform plan`, and apply.
+To halt again, set it to `false` and repeat the reviewed plan/apply workflow.
+
+An older unmanaged Lambda named `weather-pipeline` also exists in the deployed
+account. It has no configured trigger and is independently held at zero reserved
+concurrency; keep that limit in place until the legacy function is decommissioned.
 
 ## Parquet Support (Optional)
 
@@ -157,7 +182,8 @@ terraform destroy
 ```
 
 > S3 buckets must be emptied (including versioned objects) before `terraform destroy`
-> can succeed.
+> can succeed. A recursive `aws s3 rm` removes current objects only; versions and
+> delete markers require version-aware cleanup.
 
 ## Troubleshooting
 
@@ -165,6 +191,8 @@ terraform destroy
   permissions for Lambda, IAM, S3, Glue, Athena, and EventBridge.
 - **No rows in Athena** — filter `ingest_hour` within the projected range and verify
   objects exist under `processed/ingest_hour=yyyy-MM-dd-HH/`.
+- **Duplicate columns in Athena** — this was a legacy crawler issue; see the
+  [resolved metadata note](docs/athena-duplicate-columns.md).
 - **Log group already exists** — import it before the first apply; see
   [setup.md](setup.md#5-migrate-an-existing-deployment).
 - **Lambda timeout** — the function has a 15-minute timeout and 512 MB memory;

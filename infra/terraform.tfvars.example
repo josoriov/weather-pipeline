@@ -1,5 +1,6 @@
 project_name               = "weather-pipeline"
 aws_region                 = "us-east-1"
+execution_enabled          = false
 lambda_schedule_expression = "cron(0/15 * * * ? *)"
 
 lambda_environment = {}
@@ -18,8 +19,8 @@ athena_bytes_scanned_cutoff_per_query   = 104857600
 partition_projection_start              = "2026-01-01-00"
 
 # Activate the Project user-defined cost allocation tag before setting an email.
-monthly_budget_usd           = 1
-budget_alert_email           = null
+monthly_budget_usd         = 1
+budget_alert_email         = null
 cost_anomaly_threshold_usd = 0.5
 
 common_tags = {
