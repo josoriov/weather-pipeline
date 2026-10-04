@@ -33,7 +33,7 @@ pressure, cloud cover, dew point, visibility, is_day.
 | `infra/` | Terraform stack — S3, Lambda, IAM, EventBridge, Glue, Athena |
 | `docs/` | Operational notes and resolved incident documentation |
 | `tests/` | Unit tests for the Lambda handler |
-| `data/` | Sample city coordinates (`cities.json`) |
+| `data/` | Canonical city coordinates and timezones (`cities.json`), bundled into the Lambda package |
 | `layer_build/` | Scripts to build and publish a PyArrow Lambda layer |
 | `scripts/` | Exploratory Jupyter notebook used during prototyping |
 | `dist/` | Build artifacts (generated — not committed) |

@@ -4,6 +4,7 @@ import gzip
 import io
 import json
 import os
+import pathlib
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -41,22 +42,31 @@ CURRENT_FIELDS = [
     "is_day",
 ]
 
-CITY_COORDS: dict[str, tuple[float, float, str]] = {
-    "Berlin": (52.52, 13.405, "Europe/Berlin"),
-    "Madrid": (40.4168, -3.7038, "Europe/Madrid"),
-    "Regensburg": (49.0134, 12.1016, "Europe/Berlin"),
-    "Bogota": (4.711, -74.0721, "America/Bogota"),
-    "CDMX": (19.4326, -99.1332, "America/Mexico_City"),
-    "Cali": (3.4516, -76.532, "America/Bogota"),
-    "Medellin": (6.2442, -75.5812, "America/Bogota"),
-    "Paris": (48.8566, 2.3522, "Europe/Paris"),
-    "New York": (40.7128, -74.006, "America/New_York"),
-    "Buenos Aires": (-34.6037, -58.3816, "America/Argentina/Buenos_Aires"),
-    "London": (51.5074, -0.1278, "Europe/London"),
-    "Tokyo": (35.6895, 139.6917, "Asia/Tokyo"),
-    "Toronto": (43.6511, -79.3839, "America/Toronto"),
-    "Sydney": (-33.8688, 151.2093, "Australia/Sydney"),
-}
+# The Lambda package bundles cities.json next to app.py; a repo checkout keeps
+# it under data/. Keeping one canonical file avoids a second hardcoded city list.
+CITY_CONFIG_PATH = pathlib.Path(__file__).with_name("cities.json")
+CITY_CONFIG_FALLBACK = pathlib.Path(__file__).resolve().parents[1] / "data" / "cities.json"
+
+
+def load_city_coords(path: Optional[pathlib.Path] = None) -> dict[str, tuple[float, float, str]]:
+    """Load city coordinates and timezones from the canonical cities.json file.
+
+    Args:
+        path: Optional explicit config path, mainly for tests.
+
+    Returns:
+        Mapping of city name to ``(latitude, longitude, timezone)``.
+    """
+    config_path = path or (CITY_CONFIG_PATH if CITY_CONFIG_PATH.exists() else CITY_CONFIG_FALLBACK)
+    with config_path.open(encoding="utf-8") as config_file:
+        raw = json.load(config_file)
+    return {
+        name: (entry["latitude"], entry["longitude"], entry["timezone"])
+        for name, entry in raw.items()
+    }
+
+
+CITY_COORDS = load_city_coords()
 
 class MissingS3Client:
     def put_object(self, **_: Any) -> None:

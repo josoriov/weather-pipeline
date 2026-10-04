@@ -18,9 +18,13 @@ import zipfile
 source_dir = pathlib.Path(sys.argv[1])
 package_path = pathlib.Path(sys.argv[2])
 source_file = source_dir / "app.py"
+# Bundle the canonical city config next to the handler so the Lambda can load
+# it at runtime from a single source of truth.
+cities_file = source_dir.parent / "data" / "cities.json"
 
 with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
     bundle.write(source_file, arcname="app.py")
+    bundle.write(cities_file, arcname="cities.json")
 PY
 )
 

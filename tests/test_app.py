@@ -34,6 +34,10 @@ class DummyResponse:
 
 
 class WeatherExtractorTests(unittest.TestCase):
+    def test_city_config_loads_canonical_file(self) -> None:
+        self.assertEqual(len(app.CITY_COORDS), 14)
+        self.assertEqual(app.CITY_COORDS["Bogota"], (4.711, -74.0721, "America/Bogota"))
+
     def test_to_partition_path(self) -> None:
         stamp = dt.datetime(2026, 3, 5, 10, 15, tzinfo=dt.timezone.utc)
         partition = app.to_partition_path(stamp)
