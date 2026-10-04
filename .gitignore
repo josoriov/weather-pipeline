@@ -4,9 +4,6 @@ logs/
 .env
 .env.*
 
-# UV files
-uv.lock
-
 # Python caches and test/coverage outputs
 __pycache__/
 *.py[cod]
