@@ -1,7 +1,5 @@
 # TODO
 
-Last reviewed: 2026-08-26
-
 ## Current State
 
 - Lambda ETL batches all successful cities into one raw and one processed object per invocation.
@@ -28,22 +26,3 @@ Last reviewed: 2026-08-26
   and the final Terraform plan reported no drift. After reconciling the halt on
   2026-08-26, a refreshed live plan again reported no changes.
 - The PyArrow layer scripts target Python 3.11, matching the Lambda runtime, but the layer artifact has not been built or published.
-
-## Remaining Work
-
-- [x] Use Terraform >= 1.5 for the migration.
-- [x] Import the existing Lambda CloudWatch log group before the migration plan.
-- [x] Run `terraform -chdir=infra validate` and review the crawler/IAM removals.
-- [x] Apply the stack and confirm the final plan has no drift.
-- [x] Invoke Lambda manually and verify `records=15` plus one raw and one processed key.
-- [x] Validate the EventBridge schedule while active, then halt it through `execution_enabled=false`.
-- [x] Query the projected table with an `ingest_hour` predicate and verify all 14 cities.
-- [x] Activate the `Project` cost allocation tag and configure the budget/anomaly alerts.
-- [x] Halt EventBridge, the managed Lambda, the legacy Lambda, and Athena; verify no crawler or Glue job exists.
-- [ ] Approve a raw retention period, then set `raw_retention_days` (recommended: 90).
-- [ ] Compare S3 and Glue costs after one complete billing month.
-- [ ] Decide whether to keep CSV as the production format or enable Parquet.
-- [ ] If enabling Parquet, build and publish the PyArrow layer, set `lambda_layer_arns`, set `use_parquet_output=true`, and re-apply Terraform.
-- [ ] Add CI for unit tests, mypy, Terraform formatting, and Terraform validation.
-- [ ] Decide whether `data/cities.json` is only sample data or should become the source of truth for the Lambda city list.
-- [ ] Decide whether to import or delete the unmanaged legacy `weather-pipeline` Lambda.

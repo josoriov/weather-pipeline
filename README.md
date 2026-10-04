@@ -56,7 +56,7 @@ pressure, cloud cover, dew point, visibility, is_day.
 | Cost controls | **Active** — 30-day logs, Athena scan cutoff, version cleanup, USD 1.50 monthly budget, and anomaly alerts |
 
 See [setup.md](setup.md) for the end-to-end build and deployment guide, and
-[TODO.md](TODO.md) for the current repo state and remaining work.
+[TODO.md](TODO.md) for the current repo state.
 
 ## Prerequisites
 
