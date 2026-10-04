@@ -1,5 +1,7 @@
 # Weather Pipeline
 
+[![CI](https://github.com/josoriov/weather-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/josoriov/weather-pipeline/actions/workflows/ci.yml)
+
 Serverless ETL pipeline that collects near-real-time weather observations from the
 [Open-Meteo API](https://open-meteo.com/) for 14 cities worldwide, stores
 raw and processed datasets in an S3 data lake, and exposes the data through
@@ -50,7 +52,7 @@ pressure, cloud cover, dew point, visibility, is_day.
 | Terraform validation | **Passing** — validated with Terraform 1.15.4 and AWS provider 5.100.0 |
 | Lambda deployment package | **Generated locally** — `dist/function.zip` is ignored by Git and should be rebuilt before deploy |
 | PyArrow Lambda layer | **Optional, not built** — scripts target Python 3.11 and Terraform accepts layer ARNs |
-| CI/CD pipeline | **Not implemented** |
+| CI/CD pipeline | **GitHub Actions** — unit tests, mypy, Terraform fmt/validate |
 | Cost controls | **Active** — 30-day logs, Athena scan cutoff, version cleanup, USD 1.50 monthly budget, and anomaly alerts |
 
 See [setup.md](setup.md) for the end-to-end build and deployment guide, and
