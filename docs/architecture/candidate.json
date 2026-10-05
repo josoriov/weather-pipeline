@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Weather Pipeline / Serverless ETL",
+    "locale": "en",
+    "output": "docs/architecture/weather-pipeline.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/josoriov/weather-pipeline.git",
+      "provider": "github",
+      "revision": "89b4b4a4010a94a7ca84ea29bb4e6356bb10c0c3"
+    }
+  },
+  "components": [
+    {
+      "id": "weather_api", "type": "external", "label": "Open-Meteo API",
+      "sublabel": "Current weather / 14 cities", "pos": [420, 50], "size": [200, 68],
+      "sources": [
+        {"path": "lambda/app.py", "line": 164, "end_line": 181, "label": "HTTPS weather request"},
+        {"path": "data/cities.json", "line": 1, "end_line": 16, "label": "Canonical city coordinates"}
+      ]
+    },
+    {
+      "id": "schedule", "type": "messagebus", "label": "EventBridge",
+      "sublabel": "15-minute schedule by default", "pos": [40, 210], "size": [210, 68],
+      "sources": [
+        {"path": "infra/main.tf", "line": 329, "end_line": 354, "label": "Conditional schedule and invocation"},
+        {"path": "infra/variables.tf", "line": 17, "end_line": 37, "label": "Execution and cadence defaults"}
+      ]
+    },
+    {
+      "id": "ingest", "type": "backend", "label": "AWS Lambda",
+      "sublabel": "Python 3.11 / fetch + normalize", "pos": [420, 210], "size": [200, 68],
+      "sources": [
+        {"path": "lambda/app.py", "line": 435, "end_line": 513, "label": "Batch ingestion and failure behavior"},
+        {"path": "lambda/app.py", "line": 361, "end_line": 423, "label": "Normalized observations and timestamps"},
+        {"path": "infra/main.tf", "line": 281, "end_line": 327, "label": "Runtime, execution gate and layers"}
+      ]
+    },
+    {
+      "id": "lake", "type": "database", "label": "S3 Data Lake",
+      "sublabel": "raw/ JSON.gz + processed/ CSV", "pos": [810, 210], "size": [210, 68],
+      "sources": [
+        {"path": "lambda/app.py", "line": 244, "end_line": 305, "label": "Raw object upload and hourly partitions"},
+        {"path": "lambda/app.py", "line": 308, "end_line": 358, "label": "CSV or optional Parquet upload"},
+        {"path": "infra/main.tf", "line": 63, "end_line": 97, "label": "Private, versioned, encrypted bucket"}
+      ]
+    },
+    {
+      "id": "catalog", "type": "database", "label": "Glue Data Catalog",
+      "sublabel": "Static schema / hourly projection", "pos": [420, 400], "size": [210, 68],
+      "sources": [
+        {"path": "infra/main.tf", "line": 360, "end_line": 397, "label": "Projected external table over processed/"},
+        {"path": "infra/main.tf", "line": 399, "end_line": 524, "label": "Columns and CSV / Parquet SerDe"}
+      ]
+    },
+    {
+      "id": "query", "type": "backend", "label": "Amazon Athena",
+      "sublabel": "SQL analytics / when enabled", "pos": [810, 400], "size": [210, 68],
+      "sources": [
+        {"path": "infra/main.tf", "line": 530, "end_line": 546, "label": "Conditional workgroup and scan cutoff"},
+        {"path": "infra/main.tf", "line": 368, "end_line": 397, "label": "Table metadata and processed data location"}
+      ]
+    },
+    {
+      "id": "results", "type": "database", "label": "S3 Query Results",
+      "sublabel": "Separate bucket / 30-day expiry", "pos": [810, 580], "size": [210, 68],
+      "sources": [
+        {"path": "infra/main.tf", "line": 173, "end_line": 213, "label": "Private results bucket and retention"},
+        {"path": "infra/main.tf", "line": 538, "end_line": 540, "label": "Athena result output destination"}
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region", "label": "AWS / Terraform-managed resources",
+      "wraps": ["schedule", "ingest", "lake", "catalog", "query", "results"], "pad": 28
+    }
+  ],
+  "connections": [
+    {"id": "scheduled_run", "from": "schedule", "to": "ingest", "label": "When enabled", "variant": "emphasis"},
+    {"id": "fetch_weather", "from": "ingest", "to": "weather_api", "label": "HTTPS GET"},
+    {"id": "write_batch", "from": "ingest", "to": "lake", "label": "Successful batch", "variant": "emphasis"},
+    {"id": "read_processed", "from": "query", "to": "lake", "label": "Read processed/", "variant": "emphasis"},
+    {"id": "resolve_schema", "from": "catalog", "to": "query", "label": "Table metadata", "variant": "dashed"},
+    {"id": "write_results", "from": "query", "to": "results", "label": "Query output", "variant": "emphasis"}
+  ],
+  "cards": [
+    {
+      "dot": "cyan", "title": "One Capture, Two Objects",
+      "items": [
+        "Successful cities share one ingestion timestamp",
+        "One JSON.gz raw batch + one processed batch",
+        "UTC hourly partitions; Parquet needs PyArrow",
+        "City failures are logged; S3 failures propagate"
+      ]
+    },
+    {
+      "dot": "violet", "title": "SQL Without a Crawler",
+      "items": [
+        "Glue describes files; Lambda transforms them",
+        "Athena reads processed/ directly from S3",
+        "Hourly partitions are projected from metadata",
+        "Terraform defines the schema and output format"
+      ]
+    },
+    {
+      "dot": "emerald", "title": "Operations and Guardrails",
+      "items": [
+        "Default: execution_enabled=false halts execution",
+        "Private S3; SSE-S3 encryption; lake versioning",
+        "Scoped Lambda writes; CloudWatch log retention",
+        "Athena scan cap; optional budget + anomaly alerts"
+      ]
+    }
+  ]
+}

@@ -9,16 +9,23 @@ AWS Glue and Athena for analytics.
 
 ## Architecture
 
-```
-Open-Meteo API  ──▶  AWS Lambda (Python 3.11)  ──▶  S3 Data Lake
-                           │                          ├── raw/ (1 gzip batch/run)
-                       EventBridge                    └── processed/ (1 batch/run)
-                  (15 min when enabled)                       │
-                                                  Projected Glue table
-                                                   (no scheduled crawler)
-                                                              │
-                                                 Athena (when enabled) ─▶ queries
-```
+![Weather Pipeline architecture: EventBridge invokes Lambda, which fetches Open-Meteo observations and writes raw and processed batches to S3. Athena reads processed data using Glue metadata and writes to a separate results bucket.](docs/architecture/weather-pipeline.svg)
+
+[Interactive architecture diagram](docs/architecture/weather-pipeline.html)
+— download the HTML and open it in a browser to explore source references,
+switch between light and dark themes, and export portfolio images.
+
+When execution is enabled, EventBridge invokes Lambda every 15 minutes by default.
+Lambda fetches each city's observations, normalizes timestamps, and writes one
+compressed JSON batch plus one CSV batch (or optional Parquet) per successful run.
+Both datasets use UTC hourly partitions in the same private, encrypted S3 bucket.
+Glue supplies the static schema and partition projection; Athena reads
+`processed/` directly and writes query output to a separate bucket.
+
+**Execution is disabled by default:** `execution_enabled = false` disables the
+schedule and Athena workgroup and sets Lambda reserved concurrency to zero.
+The diagram shows the configured execution paths when enabled; it does not imply
+that the pipeline is currently running.
 
 **Cities tracked:** Berlin, Madrid, Regensburg, Paris, London, New York, Toronto,
 Buenos Aires, Bogota, CDMX, Cali, Medellin, Tokyo, Sydney.
@@ -34,6 +41,7 @@ pressure, cloud cover, dew point, visibility, is_day.
 | `lambda/` | Python Lambda handler (`app.py`) and packaging script |
 | `infra/` | Terraform stack — S3, Lambda, IAM, EventBridge, Glue, Athena |
 | `docs/` | Operational notes and resolved incident documentation |
+| `docs/architecture/` | Archify diagram specification, interactive HTML, and SVG preview |
 | `tests/` | Unit tests for the Lambda handler |
 | `data/` | Canonical city coordinates and timezones (`cities.json`), bundled into the Lambda package |
 | `layer_build/` | Scripts to build and publish a PyArrow Lambda layer |
