@@ -11,8 +11,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "mypy>=1.10,<2.0",
-  "pyarrow==23.0.1",
+  "mypy>=1.10,<3.0",
+  "pyarrow==25.0.1",
 ]
 
 [tool.uv]
