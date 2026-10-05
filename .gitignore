@@ -47,3 +47,9 @@ infra/outputs
 
 # Agentic and AI files
 agents/*
+
+# Archify: publish diagram specs and HTML, keep local evidence private
+/.archify/**
+!/.archify/*/
+!/.archify/*/candidate.json
+!/.archify/*/*.html
