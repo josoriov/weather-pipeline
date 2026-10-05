@@ -1,0 +1,52 @@
+version: 2
+
+updates:
+  # Python project (pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python:
+        patterns: ["*"]
+
+  # PyArrow Lambda layer requirements
+  - package-ecosystem: "pip"
+    directory: "/layer_build"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      layer:
+        patterns: ["*"]
+
+  # GitHub Actions used by CI
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Terraform providers / modules
+  - package-ecosystem: "terraform"
+    directory: "/infra"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      terraform:
+        patterns: ["*"]
