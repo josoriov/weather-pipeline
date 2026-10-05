@@ -49,7 +49,7 @@ pressure, cloud cover, dew point, visibility, is_day.
 | Terraform infrastructure | **Reconciled** — live plan reported no changes on 2026-08-26 |
 | Glue catalog | **Cost optimized** — static projected table; no crawler, crawler schedule, or crawler IAM role |
 | Local checks | **Passing** — unit tests, mypy, and Terraform formatting |
-| Terraform validation | **Passing** — validated with Terraform 1.15.4 and AWS provider 5.100.0 |
+| Terraform validation | **Passing** — validated with Terraform 1.15.4 and AWS provider 6.67.0 |
 | Lambda deployment package | **Generated locally** — `dist/function.zip` is ignored by Git and should be rebuilt before deploy |
 | PyArrow Lambda layer | **Optional, not built** — scripts target Python 3.11 and Terraform accepts layer ARNs |
 | CI/CD pipeline | **GitHub Actions** — unit tests, mypy, Terraform fmt/validate |
