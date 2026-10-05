@@ -9,9 +9,9 @@ AWS Glue and Athena for analytics.
 
 ## Architecture
 
-![Weather Pipeline architecture: EventBridge invokes Lambda, which fetches Open-Meteo observations and writes raw and processed batches to S3. Athena reads processed data using Glue metadata and writes to a separate results bucket.](docs/assets/weather-pipeline.svg)
+![Weather Pipeline architecture: EventBridge invokes Lambda, which fetches Open-Meteo observations and writes raw and processed batches to S3. Athena reads processed data using Glue metadata and writes to a separate results bucket.](docs/architecture/weather-pipeline.svg)
 
-[Interactive architecture diagram](.archify/architecture-weather-pipeline-20261005-160328/weather-pipeline.html)
+[Interactive architecture diagram](docs/architecture/weather-pipeline.html)
 — download the HTML and open it in a browser to explore source references,
 switch between light and dark themes, and export portfolio images.
 
@@ -40,8 +40,8 @@ pressure, cloud cover, dew point, visibility, is_day.
 |------|-------------|
 | `lambda/` | Python Lambda handler (`app.py`) and packaging script |
 | `infra/` | Terraform stack — S3, Lambda, IAM, EventBridge, Glue, Athena |
-| `docs/` | Architecture SVG preview, operational notes, and resolved incident documentation |
-| `.archify/` | Diagram specification and interactive HTML; local validation evidence is ignored |
+| `docs/` | Operational notes and resolved incident documentation |
+| `docs/architecture/` | Archify diagram specification, interactive HTML, and SVG preview |
 | `tests/` | Unit tests for the Lambda handler |
 | `data/` | Canonical city coordinates and timezones (`cities.json`), bundled into the Lambda package |
 | `layer_build/` | Scripts to build and publish a PyArrow Lambda layer |

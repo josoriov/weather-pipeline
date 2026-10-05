@@ -4,7 +4,7 @@
   "meta": {
     "title": "Weather Pipeline / Serverless ETL",
     "locale": "en",
-    "output": ".archify/architecture-weather-pipeline-20261005-160328/weather-pipeline.html",
+    "output": "docs/architecture/weather-pipeline.html",
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/josoriov/weather-pipeline.git",
