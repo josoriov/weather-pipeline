@@ -5,7 +5,7 @@ terraform {
     # Core AWS provider that manages Lambda, S3, Glue, Athena, etc.
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.55"
+      version = "~> 6.67"
     }
     # Random provider is used for suffixes so bucket names stay globally unique.
     random = {
