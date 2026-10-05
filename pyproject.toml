@@ -12,7 +12,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "mypy>=1.10,<2.0",
-  "pyarrow==16.1.0",
+  "pyarrow==23.0.1",
 ]
 
 [tool.uv]
